@@ -1,10 +1,18 @@
 const RELAY_URL = 'http://localhost:8787';
 
+// Highlighting requires "Include current page" (page text sent with every
+// prompt), which turned out to be expensive on the cloud model — a long
+// session's history compounds on top of it every message. Disabled as a
+// single flag so it's easy to flip back on later rather than deleting the
+// feature outright.
+const HIGHLIGHT_AND_PAGE_CONTEXT_DISABLED = true;
+
 const promptInput = document.getElementById('prompt');
 const sendBtn = document.getElementById('send');
 const output = document.getElementById('output');
 const statusDot = document.getElementById('status-dot');
 const providerBadge = document.getElementById('provider-badge');
+const sessionInfoEl = document.getElementById('session-info');
 const attachmentsEl = document.getElementById('attachments');
 const includePageCheckbox = document.getElementById('include-page');
 const pageContextRow = document.getElementById('page-context-row');
@@ -21,6 +29,7 @@ const highlightToggleBtn = document.getElementById('highlight-toggle');
 let highlightMode = false;
 
 function setHighlightMode(on) {
+  if (HIGHLIGHT_AND_PAGE_CONTEXT_DISABLED) return;
   highlightMode = on;
   highlightToggleBtn.classList.toggle('active', on);
   promptInput.placeholder = on
@@ -39,6 +48,14 @@ function setHighlightMode(on) {
 }
 
 highlightToggleBtn.addEventListener('click', () => setHighlightMode(!highlightMode));
+
+if (HIGHLIGHT_AND_PAGE_CONTEXT_DISABLED) {
+  highlightToggleBtn.disabled = true;
+  highlightToggleBtn.title = 'Disabled — highlighting requires page context, which was too expensive to keep on by default';
+  includePageCheckbox.checked = false;
+  includePageCheckbox.disabled = true;
+  pageContextRow.title = 'Disabled to reduce cost — this feature also drives highlighting';
+}
 
 let sending = false;
 
@@ -347,6 +364,10 @@ soundToggle.checked = localStorage.getItem('highlightSoundsEnabled') !== 'false'
 soundToggle.addEventListener('change', () => {
   localStorage.setItem('highlightSoundsEnabled', String(soundToggle.checked));
 });
+if (HIGHLIGHT_AND_PAGE_CONTEXT_DISABLED) {
+  soundToggle.disabled = true;
+  soundToggle.title = 'Disabled — highlighting (the only thing that plays a sound) is turned off';
+}
 
 let audioCtx = null;
 function getAudioCtx() {
@@ -474,6 +495,7 @@ function stripHighlightLines(rawText, seenTargets, onNewTarget) {
 }
 
 async function refreshPageContextLabel() {
+  if (HIGHLIGHT_AND_PAGE_CONTEXT_DISABLED) return;
   try {
     const tab = await getActiveTab();
     if (!tab || !/^https?:/.test(tab.url || '')) {
@@ -567,7 +589,7 @@ async function checkHealth() {
     const res = await fetch(`${RELAY_URL}/health`);
     statusDot.className = res.ok ? 'dot online' : 'dot offline';
     if (res.ok) {
-      const { busy, provider } = await res.json();
+      const { busy, provider, session } = await res.json();
       sendBtn.disabled = sending || busy;
       if (provider) {
         providerBadge.hidden = false;
@@ -577,12 +599,21 @@ async function checkHealth() {
           ? `Talking to a local model (${provider.model || 'unknown'}), not Anthropic's cloud`
           : 'Talking to Anthropic’s cloud';
       }
+      if (session?.cwd) {
+        sessionInfoEl.hidden = false;
+        sessionInfoEl.textContent = session.cwd.split('/').filter(Boolean).pop() || session.cwd;
+        sessionInfoEl.title = `${session.cwd}\nsession ${session.sessionId}`;
+      } else {
+        sessionInfoEl.hidden = true;
+      }
     } else {
       providerBadge.hidden = true;
+      sessionInfoEl.hidden = true;
     }
   } catch {
     statusDot.className = 'dot offline';
     providerBadge.hidden = true;
+    sessionInfoEl.hidden = true;
   }
 }
 checkHealth();
@@ -751,12 +782,17 @@ async function sendPrompt() {
   }, 200);
 
   function refreshDisplay() {
-    const displayText = stripHighlightLines(rawText, seenHighlights, (target) => {
-      triggerHighlight(target).then((note) => {
-        rawText += `\n\n${note}`;
-        refreshDisplay();
-      });
-    });
+    // Still strip any stray HIGHLIGHT: line for a clean display (shouldn't
+    // occur without page context anyway), just never act on it.
+    const onNewTarget = HIGHLIGHT_AND_PAGE_CONTEXT_DISABLED
+      ? () => {}
+      : (target) => {
+          triggerHighlight(target).then((note) => {
+            rawText += `\n\n${note}`;
+            refreshDisplay();
+          });
+        };
+    const displayText = stripHighlightLines(rawText, seenHighlights, onNewTarget);
     renderRichText(responseEl, displayText);
     output.scrollTop = output.scrollHeight;
   }
@@ -813,7 +849,7 @@ async function sendPrompt() {
 
   try {
     let pageContext = null;
-    if (includePageCheckbox.checked) {
+    if (!HIGHLIGHT_AND_PAGE_CONTEXT_DISABLED && includePageCheckbox.checked) {
       // getPageContext already validates the tab itself (returns null for
       // non-http pages) — .disabled isn't a reliable signal here, since
       // it's also used to lock the checkbox ON during highlight mode.

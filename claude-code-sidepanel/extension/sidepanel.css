@@ -26,6 +26,21 @@ header {
   flex-shrink: 0;
 }
 
+#session-info {
+  padding: 6px 12px;
+  border-bottom: 1px solid #333;
+  font-size: 11px;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+#session-info:before {
+  content: "📁 ";
+}
+
 .header-right {
   display: flex;
   align-items: center;

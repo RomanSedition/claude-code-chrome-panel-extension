@@ -14,8 +14,86 @@
 const http = require('http');
 const { spawn } = require('child_process');
 const { StringDecoder } = require('string_decoder');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 const PORT = 8787;
+
+// `claude --continue` resumes a session scoped to the relay's own working
+// directory, which is usually NOT the project your interactive Claude Code
+// session (e.g. the one open in VS Code) actually runs from — the two end
+// up as separate, unrelated conversations. Every session is stored as
+// ~/.claude/projects/<project>/<session-id>.jsonl regardless of which
+// directory it's for, so finding whichever one was modified most recently
+// and resuming THAT file directly reliably targets "whatever Claude Code
+// session you were just using", matching --continue's intent without the
+// cwd-scoping quirk. (This assumes only one Claude Code session is active
+// at a time — resuming a session that's concurrently open elsewhere causes
+// the same file to be written by two processes at once.)
+function findMostRecentSessionFile() {
+  const projectsDir = path.join(os.homedir(), '.claude', 'projects');
+  let best = null; // { file, mtimeMs }
+  let projectDirs;
+  try {
+    projectDirs = fs.readdirSync(projectsDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of projectDirs) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(projectsDir, entry.name);
+    let files;
+    try {
+      files = fs.readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.endsWith('.jsonl')) continue;
+      let stat;
+      try {
+        stat = fs.statSync(path.join(dir, file));
+      } catch {
+        continue;
+      }
+      if (!best || stat.mtimeMs > best.mtimeMs) best = { file: path.join(dir, file), mtimeMs: stat.mtimeMs };
+    }
+  }
+  return best?.file || null;
+}
+
+// The ~/.claude/projects/<encoded-path> folder name isn't reliably
+// decodable back into a real path (both "/" and literal spaces become "-"),
+// but each transcript record carries the exact, real cwd it was written
+// from — read that instead. The first line or two are queue-bookkeeping
+// entries with no cwd field, so scan forward until one has it.
+function getSessionInfo(sessionFile) {
+  if (!sessionFile) return null;
+  const sessionId = path.basename(sessionFile, '.jsonl');
+  let cwd = null;
+  try {
+    const fd = fs.openSync(sessionFile, 'r');
+    const buf = Buffer.alloc(16384);
+    const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    for (const line of buf.toString('utf8', 0, bytesRead).split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        if (event.cwd) {
+          cwd = event.cwd;
+          break;
+        }
+      } catch {
+        // last line in the buffer is likely cut off mid-JSON — skip
+      }
+    }
+  } catch {
+    // file unreadable — leave cwd null
+  }
+  return { sessionId, cwd };
+}
 
 // Set this (along with ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / etc. in
 // the same environment this server is started from) to point at a custom
@@ -127,6 +205,7 @@ const server = http.createServer((req, res) => {
       // ANTHROPIC_BASE_URL set means this relay was started pointed at a
       // custom (e.g. local Ollama) provider rather than the default cloud.
       provider: { local: Boolean(process.env.ANTHROPIC_BASE_URL), model: CLAUDE_MODEL },
+      session: getSessionInfo(findMostRecentSessionFile()),
     }));
     return;
   }
@@ -179,8 +258,14 @@ const server = http.createServer((req, res) => {
       // Messages API content-block shape) written to stdin.
       const fullText = formatPageContext(pageContext) + (prompt || '');
 
+      // Re-checked on every request so it always follows whichever session
+      // was actually most recently active, not whatever it resolved to on
+      // the first request.
+      const mostRecentSession = findMostRecentSessionFile();
+      const sessionArgs = mostRecentSession ? ['--resume', mostRecentSession] : ['--continue'];
+
       let args, claude;
-      const commonArgs = ['--continue', '--output-format', 'stream-json', '--include-partial-messages', '--verbose'];
+      const commonArgs = [...sessionArgs, '--output-format', 'stream-json', '--include-partial-messages', '--verbose'];
       if (CLAUDE_MODEL) commonArgs.push('--model', CLAUDE_MODEL);
       if (images.length > 0) {
         args = ['-p', '--input-format', 'stream-json', ...commonArgs];

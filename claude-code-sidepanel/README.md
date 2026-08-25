@@ -29,12 +29,21 @@ Claude Code relay listening on http://localhost:8787
 
 Leave this running in a terminal alongside your normal Claude Code session.
 
-**Important:** the relay uses `claude --continue`, which resumes your most
-recently active Claude Code session on this machine. Make sure you've started
-(or previously used) Claude Code in your project folder at least once before
-sending prompts from the panel — otherwise there's no session to continue. If
-you juggle multiple projects/sessions, open `relay-server/server.js` and swap
-`--continue` for `--resume YOUR_SESSION_ID` to target a specific one.
+**Important:** on every request, the relay scans `~/.claude/projects/` for
+whichever session file (across every project) was modified most recently, and
+resumes that one directly with `--resume`. In practice this means the panel
+continues whatever Claude Code conversation you were just using — including
+an interactive session open in VS Code or a terminal — without you having to
+configure a project path. The header shows a small 📁 badge naming the folder
+of the session it's currently targeting, so you can tell at a glance.
+
+This assumes you're not running more than one Claude Code session at the same
+moment. If you are, both processes end up writing to the same session file at
+once — in testing this reliably caused the CLI to abandon that file and start
+a new one instead, losing the conversation you were resuming. Treat the panel
+as an alternative to typing into an already-open Claude Code session, not a
+second one running alongside it. (If no session exists anywhere yet, it falls
+back to plain `--continue`.)
 
 ## 2. Load the extension in Chrome
 
@@ -67,6 +76,10 @@ generates it.
   "Responding…" indicator with a live elapsed timer. Once done, it collapses
   into a summary like `Thought for 2.1s · sent 36.4k tokens · replied 84
   tokens`.
+- **Header badges** — a pill showing whether you're talking to the cloud
+  model or a local one (see "Custom / local model providers" below), and a
+  📁 badge naming the project folder of the Claude Code session currently
+  being resumed.
 - **Copyable code blocks** — any fenced code block in a reply renders as a
   styled box with a one-click copy button, instead of raw text.
 - **Paste-to-attach images** — paste a screenshot (Cmd/Ctrl+V) straight into
@@ -74,24 +87,29 @@ generates it.
   to Claude as an image.
 - **Prompt history** — press **↑** / **↓** at the start/end of the input box
   to cycle back through previously sent prompts, shell-style.
-- **"Include current page" context** — checked by default; sends the active
-  tab's URL, title, and visible text along with your prompt, so you can ask
-  about "this page" without pasting a URL. Automatically disabled on pages it
-  can't read (`chrome://`, the Web Store, etc.), and honestly tells you when
-  a long page's content had to be truncated rather than silently guessing.
-- **On-page highlighting** — ask Claude to "circle X" / "highlight X" / "find
-  X on this page" and it'll draw a hand-drawn-style red rectangle around the
-  real text on the page (with a scribble sound as it's drawn and a ding when
-  done — toggle the 🔊 icon to mute). Works for real DOM text (headings,
-  labels, buttons — e.g. Figma's UI chrome); it can't reach into a canvas or
-  image (e.g. shapes on a design canvas).
-  - **Highlight mode** (the red "Highlight" button next to Send): a shortcut
-    that skips typing out "please circle X" — whatever you type is
-    auto-wrapped as a highlight request and sent to Claude. Locks "Include
-    current page" on (required for it to find anything) and disables image
-    pasting while active, since there's nothing to send an image to.
 - **Single-flight requests** — only one prompt can be in flight at a time;
   a second send while one's running is rejected rather than racing it.
+
+### Currently disabled: page context and on-page highlighting
+
+- **"Include current page" context** sends the active tab's URL, title, and
+  visible text along with your prompt, so you can ask about "this page"
+  without pasting a URL.
+- **On-page highlighting** lets you ask Claude to "circle X" / "highlight X"
+  / "find X on this page", drawing a hand-drawn-style red rectangle around
+  the real text on the page (with a scribble sound as it's drawn and a ding
+  when done). Works for real DOM text (headings, labels, buttons — e.g.
+  Figma's UI chrome); it can't reach into a canvas or image (e.g. shapes on
+  a design canvas). Highlight mode (the red button next to Send) is a
+  shortcut that auto-wraps whatever you type as a highlight request instead
+  of you typing "please circle X" each time.
+
+Both are **turned off by default** — highlighting depends on page context,
+and resending a page's full text with every single prompt turned out to be
+expensive, especially once a session's history has grown large (every prompt
+pays to replay it, page context or not). To turn them back on, open
+`extension/sidepanel.js` and flip `HIGHLIGHT_AND_PAGE_CONTEXT_DISABLED` to
+`false` near the top of the file, then reload the extension.
 
 ## Notes / things you may want to tweak
 
@@ -107,11 +125,16 @@ generates it.
 - **Security**: the relay server has no auth and accepts requests from any
   local origin. That's fine for solo local use, but don't expose port 8787
   to your network or run this on a shared machine.
-- **Multiple sessions**: `--continue` always targets your most recent
-  session for the relay's own working directory. If you're also running
-  Claude Code interactively in a terminal at the same time from a different
-  directory, the two won't collide; from the same directory, they'll share
-  one conversation.
+- **Multiple sessions**: see the session-targeting note near the top — the
+  relay always resumes whichever session was modified most recently across
+  every project, so don't run it alongside another active Claude Code
+  session (see above for what goes wrong if you do).
+- **Harmless provider warnings filtered out**: pointing at a custom provider
+  makes `claude` print a couple of informational (non-error) stderr lines —
+  a connectors-disabled notice and an unrecognized-model warning for a
+  non-Anthropic model name. Both are dropped before reaching the extension;
+  real errors still come through. See `HARMLESS_STDERR_PATTERNS` in
+  `server.js` if a CLI update ever changes that wording.
 - **Custom / local model providers**: if you normally run `claude` pointed at
   a local model (Ollama, etc.) via env vars like `ANTHROPIC_BASE_URL` /
   `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`, those need to be set in the
