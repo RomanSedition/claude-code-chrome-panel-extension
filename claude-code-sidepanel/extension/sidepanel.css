@@ -26,6 +26,33 @@ header {
   flex-shrink: 0;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  border-radius: 10px;
+}
+
+.provider-badge.local {
+  background: #3a2a12;
+  color: #e0a458;
+  border: 1px solid #6b4a1f;
+}
+
+.provider-badge.cloud {
+  background: #16283a;
+  color: #7aa2f7;
+  border: 1px solid #274568;
+}
+
 .dot {
   width: 8px;
   height: 8px;

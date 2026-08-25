@@ -4,6 +4,7 @@ const promptInput = document.getElementById('prompt');
 const sendBtn = document.getElementById('send');
 const output = document.getElementById('output');
 const statusDot = document.getElementById('status-dot');
+const providerBadge = document.getElementById('provider-badge');
 const attachmentsEl = document.getElementById('attachments');
 const includePageCheckbox = document.getElementById('include-page');
 const pageContextRow = document.getElementById('page-context-row');
@@ -566,11 +567,22 @@ async function checkHealth() {
     const res = await fetch(`${RELAY_URL}/health`);
     statusDot.className = res.ok ? 'dot online' : 'dot offline';
     if (res.ok) {
-      const { busy } = await res.json();
+      const { busy, provider } = await res.json();
       sendBtn.disabled = sending || busy;
+      if (provider) {
+        providerBadge.hidden = false;
+        providerBadge.className = `provider-badge ${provider.local ? 'local' : 'cloud'}`;
+        providerBadge.textContent = provider.local ? provider.model || 'Local' : 'Cloud';
+        providerBadge.title = provider.local
+          ? `Talking to a local model (${provider.model || 'unknown'}), not Anthropic's cloud`
+          : 'Talking to Anthropic’s cloud';
+      }
+    } else {
+      providerBadge.hidden = true;
     }
   } catch {
     statusDot.className = 'dot offline';
+    providerBadge.hidden = true;
   }
 }
 checkHealth();

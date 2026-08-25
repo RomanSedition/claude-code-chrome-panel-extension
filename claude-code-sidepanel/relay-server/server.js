@@ -109,7 +109,13 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', busy: claudeBusy }));
+    res.end(JSON.stringify({
+      status: 'ok',
+      busy: claudeBusy,
+      // ANTHROPIC_BASE_URL set means this relay was started pointed at a
+      // custom (e.g. local Ollama) provider rather than the default cloud.
+      provider: { local: Boolean(process.env.ANTHROPIC_BASE_URL), model: CLAUDE_MODEL },
+    }));
     return;
   }
 
