@@ -13,6 +13,7 @@
 
 const http = require('http');
 const { spawn } = require('child_process');
+const { StringDecoder } = require('string_decoder');
 
 const PORT = 8787;
 
@@ -37,8 +38,8 @@ ${text || '(no text extracted)'}
 """
 
 If the user asks you to point out, circle, highlight, or locate something on this page, include a line in your reply formatted exactly as:
-HIGHLIGHT: <exact text as it appears in the page content above>
-Use the shortest exact substring from the page content above that uniquely identifies the target (e.g. a button label, section heading, or short phrase), copied verbatim including capitalization. You can include multiple HIGHLIGHT lines for multiple items. This only works for real text on the page — it can't locate things drawn inside a canvas/image (e.g. shapes on a design canvas). Still answer normally in prose; the HIGHLIGHT line(s) are a directive for drawing an on-page marker and won't be shown to the user as text.
+HIGHLIGHT: <short exact substring from the page content above>
+Keep it under ~10 words, copied verbatim (including capitalization) from the page content above, and anchor it to the specific thing asked for — not a heading or label near it. If asked to highlight a whole paragraph, quote the first several words of that paragraph's own body text (never the section heading above it, even if the paragraph doesn't have its own heading — a heading and the paragraph under it are different targets). A long exact quote of the full passage is unnecessary and fragile (the match fails if it's reproduced even slightly wrong): the marker is only drawn tightly around whatever short snippet you give, not the whole passage, but a snippet from the right starting point still points the user at the right place. You can include multiple HIGHLIGHT lines for multiple items. This only works for real text on the page — it can't locate things drawn inside a canvas/image (e.g. shapes on a design canvas). Still answer normally in prose; the HIGHLIGHT line(s) are a directive for drawing an on-page marker and won't be shown to the user as text.
 
 `;
 }
@@ -172,9 +173,15 @@ const server = http.createServer((req, res) => {
       const translate = makeTranslator();
       const writeEvent = (event) => res.write(JSON.stringify(event) + '\n');
 
+      // A multi-byte UTF-8 character (e.g. "⅓") can land right on a stdout
+      // chunk boundary. Calling .toString() on each raw chunk independently
+      // would corrupt it into replacement characters — StringDecoder holds
+      // back an incomplete trailing sequence until the next chunk completes
+      // it, decoding correctly across boundaries.
+      const stdoutDecoder = new StringDecoder('utf8');
       let leftover = '';
       claude.stdout.on('data', (data) => {
-        const chunk = leftover + data.toString();
+        const chunk = leftover + stdoutDecoder.write(data);
         const lines = chunk.split('\n');
         leftover = lines.pop(); // last line may be incomplete, hold it
         for (const line of lines) {
@@ -188,8 +195,9 @@ const server = http.createServer((req, res) => {
         }
       });
 
+      const stderrDecoder = new StringDecoder('utf8');
       claude.stderr.on('data', (data) => {
-        writeEvent({ type: 'stderr', text: data.toString() });
+        writeEvent({ type: 'stderr', text: stderrDecoder.write(data) });
       });
 
       claude.on('error', (err) => {

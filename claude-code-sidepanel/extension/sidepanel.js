@@ -84,6 +84,20 @@ function highlightTextOnPage(searchText) {
   // node each character came from. A plain per-node search misses common
   // cases like a heading sitting right next to its "[edit]" link — those
   // are separate text nodes that only form one string once concatenated.
+  // getBoundingClientRect() is zero-sized for anything not actually
+  // rendered — including a descendant of a display:none ancestor, since
+  // that check doesn't require walking ancestors itself (unlike display,
+  // visibility is inherited, so checking the element's own computed
+  // visibility already reflects an ancestor's visibility:hidden too).
+  const visibilityCache = new Map();
+  function isVisible(el) {
+    if (visibilityCache.has(el)) return visibilityCache.get(el);
+    const rect = el.getBoundingClientRect();
+    const visible = (rect.width > 0 || rect.height > 0) && getComputedStyle(el).visibility !== 'hidden';
+    visibilityCache.set(el, visible);
+    return visible;
+  }
+
   function buildTextIndex() {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     const nodes = [];
@@ -91,6 +105,12 @@ function highlightTextOnPage(searchText) {
     let node;
     while ((node = walker.nextNode())) {
       if (!node.textContent) continue;
+      // Complex SPAs (Figma included) keep plenty of hidden text in the DOM
+      // — collapsed menus, tooltips, off-screen templates. The page context
+      // sent to the model only ever showed it visible text (innerText), so
+      // matching against hidden text here can land the box somewhere with
+      // nothing visibly there at all. Skip anything not actually rendered.
+      if (!node.parentElement || !isVisible(node.parentElement)) continue;
       nodes.push({ node, start: text.length });
       text += node.textContent;
     }
@@ -165,6 +185,43 @@ function highlightTextOnPage(searchText) {
 
   const anchorEl = range.startContainer.nodeType === 3 ? range.startContainer.parentElement : range.startContainer;
 
+  // If the matched text sits right at the start of an enclosing block
+  // element (a paragraph, list item, table cell, heading...), draw the box
+  // around that whole block instead of just the matched snippet — this is
+  // what lets "highlight this paragraph" (anchored to its first few words)
+  // box the entire paragraph rather than just those first few words. A
+  // match that ISN'T at the start of its block (a single word/phrase named
+  // mid-sentence, or short UI labels that usually live in <div>/<span>, not
+  // these tags at all) falls through unchanged, keeping a tight box.
+  function findBlockAncestor(el) {
+    const blockTags = new Set([
+      'P', 'LI', 'DD', 'DT', 'TD', 'TH', 'BLOCKQUOTE', 'FIGCAPTION',
+      'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE', 'SUMMARY', 'CAPTION',
+    ]);
+    let node = el;
+    for (let i = 0; i < 6 && node; i++) {
+      if (node.nodeType === 1 && blockTags.has(node.tagName)) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  const matchedText = range.toString().trim().toLowerCase();
+  const blockEl = findBlockAncestor(anchorEl);
+  // Guard against a false-positive block match: some apps use these same
+  // tags (a heading, a table cell) for accessibility landmarks or layout
+  // structure that can span a huge chunk of the page, not an actual visual
+  // paragraph. A real paragraph is at most a handful of wrapped lines —
+  // reject the expansion if the candidate is implausibly large for that.
+  const blockRect = blockEl?.getBoundingClientRect();
+  const expandToBlock =
+    blockEl &&
+    blockEl.textContent.trim().toLowerCase().startsWith(matchedText) &&
+    blockRect.width <= 900 &&
+    blockRect.height <= 500;
+  const target = expandToBlock ? blockEl : range;
+  const scrollTarget = expandToBlock ? blockEl : anchorEl;
+
   // scrollIntoView's behavior option can still be overridden by the page's
   // own CSS (e.g. a `scroll-behavior: smooth` rule on <html>), which turns
   // it into a multi-frame animation instead of an instant jump. An inline
@@ -173,7 +230,7 @@ function highlightTextOnPage(searchText) {
   const htmlEl = document.documentElement;
   const prevScrollBehavior = htmlEl.style.scrollBehavior;
   htmlEl.style.scrollBehavior = 'auto';
-  anchorEl?.scrollIntoView({ block: 'center', inline: 'center' });
+  scrollTarget?.scrollIntoView({ block: 'center', inline: 'center' });
   htmlEl.style.scrollBehavior = prevScrollBehavior;
 
   const DRAW_MS = 550;
@@ -188,7 +245,7 @@ function highlightTextOnPage(searchText) {
     let lastTop = null;
     let stableFrames = 0;
     function check() {
-      const top = range.getBoundingClientRect().top;
+      const top = target.getBoundingClientRect().top;
       stableFrames = lastTop !== null && Math.abs(top - lastTop) < 0.5 ? stableFrames + 1 : 0;
       lastTop = top;
       framesLeft--;
@@ -200,7 +257,7 @@ function highlightTextOnPage(searchText) {
 
   return new Promise((resolve) => {
     waitForScrollSettle(() => {
-      const rect = range.getBoundingClientRect();
+      const rect = target.getBoundingClientRect();
       // A rectangle hugs the target far more tightly than an ellipse would
       // (an ellipse needs a lot of extra margin to avoid clipping the corners
       // of a wide, short box), so it covers a lot less of the surrounding page.
@@ -210,6 +267,24 @@ function highlightTextOnPage(searchText) {
       const y = rect.top - pad;
       const w = rect.width + pad * 2;
       const h = rect.height + pad * 2;
+
+      // position:fixed is normally relative to the viewport, EXCEPT if any
+      // ancestor has a transform/filter/perspective/will-change:transform —
+      // that creates a new containing block, silently repositioning our
+      // overlay relative to THAT ancestor instead of the viewport (a
+      // well-known CSS gotcha). Diagnostic: log it so a failure here is
+      // debuggable from the page's own devtools console.
+      let node = document.body;
+      let transformedAncestor = null;
+      while (node) {
+        const cs = getComputedStyle(node);
+        if (cs.transform !== 'none' || cs.filter !== 'none' || cs.perspective !== 'none' || cs.willChange.includes('transform')) {
+          transformedAncestor = node;
+          break;
+        }
+        node = node.parentElement;
+      }
+      console.log('[claude-highlight]', { rect, x, y, w, h, transformedAncestor, expandToBlock, blockEl });
 
       const svgNS = 'http://www.w3.org/2000/svg';
       const svg = document.createElementNS(svgNS, 'svg');
@@ -235,7 +310,10 @@ function highlightTextOnPage(searchText) {
       path.setAttribute('stroke-linejoin', 'round');
       path.setAttribute('filter', 'url(#__claude_sketchy)');
       svg.appendChild(path);
-      document.body.appendChild(svg);
+      // documentElement rather than body: if body itself has a transform
+      // (common in canvas/zoom-heavy apps), appending there would put our
+      // own overlay inside that new containing block too.
+      document.documentElement.appendChild(svg);
 
       // Reveal the path progressively (like it's being drawn) instead of
       // just fading in — timed to line up with the scribble sound.
