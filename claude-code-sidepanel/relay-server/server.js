@@ -24,6 +24,18 @@ const PORT = 8787;
 // since it's a CLI flag, not an env var, so it has to be forwarded here.
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || null;
 
+// Known-harmless stderr noise the `claude` CLI prints when pointed at a
+// custom/local provider — not errors, just informational, and confusing to
+// see on every single response. Filtered here rather than in the extension
+// since this is the one place stderr text passes through.
+const HARMLESS_STDERR_PATTERNS = [
+  /connectors are disabled because/i,
+  /unrecognized_model/i,
+];
+function isHarmlessStderr(line) {
+  return HARMLESS_STDERR_PATTERNS.some((re) => re.test(line));
+}
+
 // Only one `claude --continue` process may run at a time — a second one
 // spawned while the first is still in flight would race it for the same
 // resumed session.
@@ -209,9 +221,20 @@ const server = http.createServer((req, res) => {
         }
       });
 
+      // Buffered by line (not just passed through per raw chunk) so a
+      // known-harmless message can be matched and dropped in full even if
+      // it happens to straddle a chunk boundary.
       const stderrDecoder = new StringDecoder('utf8');
+      let stderrLeftover = '';
+      const flushStderrLine = (line) => {
+        if (!line.trim() || isHarmlessStderr(line)) return;
+        writeEvent({ type: 'stderr', text: line + '\n' });
+      };
       claude.stderr.on('data', (data) => {
-        writeEvent({ type: 'stderr', text: stderrDecoder.write(data) });
+        const chunk = stderrLeftover + stderrDecoder.write(data);
+        const lines = chunk.split('\n');
+        stderrLeftover = lines.pop();
+        for (const line of lines) flushStderrLine(line);
       });
 
       // If `claude` hangs — a misconfigured provider (ANTHROPIC_API_KEY /
@@ -238,6 +261,7 @@ const server = http.createServer((req, res) => {
       claude.on('close', (code) => {
         clearTimeout(timeoutId);
         claudeBusy = false;
+        if (stderrLeftover) flushStderrLine(stderrLeftover);
         writeEvent({ type: 'closed', code });
         res.end();
       });
