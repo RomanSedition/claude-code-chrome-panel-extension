@@ -112,3 +112,21 @@ generates it.
   Claude Code interactively in a terminal at the same time from a different
   directory, the two won't collide; from the same directory, they'll share
   one conversation.
+- **Custom / local model providers**: if you normally run `claude` pointed at
+  a local model (Ollama, etc.) via env vars like `ANTHROPIC_BASE_URL` /
+  `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`, those need to be set in the
+  *same* environment you start the relay from — a shell alias's inline
+  `VAR=value` only applies to that one command, it doesn't persist into
+  other commands (like `node server.js`) run afterward in the same terminal.
+  If your alias also passes `--model`, that's a CLI flag, not an env var, so
+  it won't inherit at all — set `CLAUDE_MODEL` and the relay forwards it as
+  `--model` itself. Example, matching an alias like
+  `ANTHROPIC_BASE_URL=http://host:11434 ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_API_KEY="" claude --model my-model`:
+
+  ```bash
+  ANTHROPIC_BASE_URL=http://host:11434 ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_API_KEY="" CLAUDE_MODEL=my-model node server.js
+  ```
+- **Timeouts**: if `claude` produces no output for 2 minutes (a hung/
+  unreachable provider, bad auth, etc.), the relay kills it and reports a
+  clear error instead of hanging forever. Adjust `REQUEST_TIMEOUT_MS` in
+  `server.js` if a slower local model needs more headroom.

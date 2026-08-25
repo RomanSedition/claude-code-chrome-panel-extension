@@ -17,6 +17,13 @@ const { StringDecoder } = require('string_decoder');
 
 const PORT = 8787;
 
+// Set this (along with ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / etc. in
+// the same environment this server is started from) to point at a custom
+// provider — e.g. a local model served through Ollama. Plain env vars
+// inherit into the spawned `claude` process automatically; --model doesn't,
+// since it's a CLI flag, not an env var, so it has to be forwarded here.
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || null;
+
 // Only one `claude --continue` process may run at a time — a second one
 // spawned while the first is still in flight would race it for the same
 // resumed session.
@@ -156,6 +163,7 @@ const server = http.createServer((req, res) => {
 
       let args, claude;
       const commonArgs = ['--continue', '--output-format', 'stream-json', '--include-partial-messages', '--verbose'];
+      if (CLAUDE_MODEL) commonArgs.push('--model', CLAUDE_MODEL);
       if (images.length > 0) {
         args = ['-p', '--input-format', 'stream-json', ...commonArgs];
         claude = spawn('claude', args, { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -200,13 +208,29 @@ const server = http.createServer((req, res) => {
         writeEvent({ type: 'stderr', text: stderrDecoder.write(data) });
       });
 
+      // If `claude` hangs — a misconfigured provider (ANTHROPIC_API_KEY /
+      // ANTHROPIC_BASE_URL pointing at an unreachable or misbehaving local
+      // model), a network issue, anything — there was previously no limit:
+      // claudeBusy would stay true forever and the request would just hang
+      // with no feedback. Kill it and report clearly instead.
+      const REQUEST_TIMEOUT_MS = 120000;
+      const timeoutId = setTimeout(() => {
+        writeEvent({
+          type: 'relayError',
+          message: `'claude' produced no response for ${REQUEST_TIMEOUT_MS / 1000}s — if you're using a custom provider (ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL pointing at a local model), check it's reachable and correctly set in the environment this relay server was started from.`,
+        });
+        claude.kill();
+      }, REQUEST_TIMEOUT_MS);
+
       claude.on('error', (err) => {
+        clearTimeout(timeoutId);
         claudeBusy = false;
         writeEvent({ type: 'relayError', message: `Could not run 'claude': ${err.message}` });
         res.end();
       });
 
       claude.on('close', (code) => {
+        clearTimeout(timeoutId);
         claudeBusy = false;
         writeEvent({ type: 'closed', code });
         res.end();
