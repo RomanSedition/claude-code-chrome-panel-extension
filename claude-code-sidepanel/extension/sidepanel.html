@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Claude Code</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <header>
+    <span>Claude Code</span>
+    <span id="status-dot" class="dot offline" title="Relay status"></span>
+  </header>
+
+  <div id="output"></div>
+
+  <div id="attachments"></div>
+
+  <div id="options-row">
+    <label id="page-context-row">
+      <input type="checkbox" id="include-page" checked />
+      <span id="page-context-label">Include current page</span>
+    </label>
+    <label id="sound-toggle-row" title="Play a sound when a highlight is drawn">
+      <input type="checkbox" id="sound-toggle" checked />
+      <span>🔊</span>
+    </label>
+  </div>
+
+  <div id="input-row">
+    <textarea
+      id="prompt"
+      placeholder="Send a prompt to your Claude Code session...  (Enter to send, Shift+Enter for a new line, paste an image to attach it)"
+      rows="3"
+    ></textarea>
+    <div id="input-buttons">
+      <button id="highlight-toggle" title="Toggle highlight mode — submit text to find &amp; circle it on the page">Highlight</button>
+      <button id="send">Send</button>
+    </div>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
